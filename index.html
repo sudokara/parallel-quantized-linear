@@ -82,6 +82,15 @@
 <li><strong>Dec 7-8.</strong> Both: create figures/tables for poster and the poster demo.</li>
 <li><strong>Dec 9-10.</strong> Both: finalize and review the report and poster.</li>
 </ul>
+
+<h2>Goals for the Poster Session</h2>
+<p>We still expect to deliver our 100% goal, noting that the serving results depend on running vLLM on Delta.</p>
+<ul>
+<li><strong>Plan to achieve:</strong> optimized fused W8A16 and W4A16 kernels, the dp4a path (W8A8 and W4A8), the tensor-core path, batched kernels for batch sizes 1 to 16, the full sweep with a cost model validated on shapes, and perplexity for each weight format and group size.</li>
+<li><strong>Depends on Delta:</strong> vLLM integration and serving throughput and KV-cache capacity for FP16, INT8 and INT4. If vLLM cannot run there, we will measure end-to-end decoding of the 1B model on GHC with Hugging Face and CUDA graphs instead.</li>
+<li><strong>Nice to have:</strong> a runtime kernel selector and A100 benchmarks.</li>
+<li><strong>Dropped:</strong> INT8 KV cache and quantized attention.</li>
+</ul>
 </section>
 <section id="references">
 <h2>References</h2>
