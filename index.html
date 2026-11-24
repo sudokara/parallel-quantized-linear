@@ -32,6 +32,7 @@
 <h2>Reports</h2>
 <ul>
 <li><a href="proposal.pdf">Project proposal</a> (November 16, 2026)</li>
+<li><a href="milestone_report.pdf">Milestone report</a> (November 24, 2026)</li>
 </ul>
 </section>
 <section id="summary">
@@ -62,7 +63,25 @@
 <li><strong>Kernel selection.</strong> Because the winning kernel changes with shape, batch and format, a cost model encompassing bandwidth, fixed-cost, and occupancy terms must correctly predict the winner from a small set of benchmarks and be validated against a full sweep.</li>
 <li><strong>Serving integration.</strong> On top of replacing the linear layer in the serving engine, we will need to demonstrate that freed weight memory becomes KV cache and enables more admitted requests and more output tokens per second, which involves the scheduler, memory manager and CUDA-graph capture.</li>
 </ul>
-<p>Resources, goals and deliverables, platform choice and the schedule are in the <a href="proposal.pdf">proposal PDF</a>.</p>
+
+<p>Resources, goals and deliverables and platform choice are in the <a href="proposal.pdf">proposal PDF</a>.</p>
+
+<h2>Schedule</h2>
+<p>Updated November 24, 2026 for the milestone.</p>
+<h3>Completed</h3>
+<ul>
+<li><strong>Nov 9-15.</strong> Reviewed existing quantized kernels and the Turing Marlin port, and set up CUDA and PyTorch on GHC.</li>
+<li><strong>Nov 16-22.</strong> FP16 GEMV baseline, quantizer, and two-step and fused W8A16 and W4A16 FMA kernels, checked against PyTorch and timed on all Llama 3.2 1B and 3B layer shapes. Measured vLLM's Marlin and ExLlama kernels on the same weights. Found that GHC's 16 GB virtual memory limit blocks vLLM serving.</li>
+</ul>
+<h3>Plan</h3>
+<ul>
+<li><strong>Nov 23-25.</strong> Shrikara: optimize fused INT4 unpacking, then sweep block and group sizes. Vikas: set up vLLM on Delta and run a Llama 3.2 1B serving test.</li>
+<li><strong>Nov 26-29.</strong> Shrikara: dp4a path with per-token INT8 activation quantization, and multi-batch GEMV benchmark. Vikas: tensor-core path and a batched GEMM that reuses weight tiles across tokens.</li>
+<li><strong>Nov 30-Dec 2.</strong> Shrikara: kernel sweep over shapes, batch sizes and group sizes, and fit the cost model. Vikas: integrate the fused kernels into vLLM on Delta and verify that both models decode correctly. Both: evaluate the cost model on all cases.</li>
+<li><strong>Dec 3-6.</strong> Shrikara: perplexity for each weight format, group size and compute path. Vikas: FP16, INT8 and INT4 serving under the same memory budget and workload. Both: turn the cost model into a runtime selector.</li>
+<li><strong>Dec 7-8.</strong> Both: create figures/tables for poster and the poster demo.</li>
+<li><strong>Dec 9-10.</strong> Both: finalize and review the report and poster.</li>
+</ul>
 </section>
 <section id="references">
 <h2>References</h2>
