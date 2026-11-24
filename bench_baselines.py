@@ -2,9 +2,6 @@
 
 import torch
 import vllm._custom_ops as ops
-from vllm.model_executor.layers.quantization.utils.marlin_utils import (
-    MARLIN_MAX_BLOCKS_PER_SM, apply_gptq_marlin_linear, marlin_make_empty,
-    marlin_make_workspace_new, marlin_permute_scales)
 from vllm.scalar_type import scalar_types
 
 import re
@@ -13,23 +10,23 @@ from torch.nn import functional as F
 from bench_fp16_gemv import (LLAMA_SHAPES, QUANT_GROUP_SIZE, RUNS, SEED, WARMUP,
                              mean_time_us, quantize_weights)
 
-def pack(values, bits, dim):
+def pack(values, bits, dim, offset=0):
     """Packs unsigned codes along dim, 32 // bits per int32, first value in the low bits."""
     # 8 for INT4, 4 for INT8
     per_word = 32 // bits
 
     # Put the axis to pack last
-    values = values.int().movedim(dim, -1)
+    values = values.movedim(dim, -1)
 
     # Group by words
     values = values.reshape(*values.shape[:-1], -1, per_word)
 
-    # Shift by each values position within the packed vector
-    shifts = bits * torch.arange(per_word, device=values.device, dtype=torch.int32)
+    # All dimensions except reduced packing dimension
+    packed = torch.zeros(values.shape[:-1], dtype=torch.int32, device=values.device)
 
-    # Shift by the amount and sum along the packed dimension to effectively XOR
-    # together the packed values into one word
-    packed = (values << shifts).sum(dim=-1, dtype=torch.int32)
+    for i in range(per_word):
+        # Pack into word
+        packed |= (values[..., i].int() + offset) << (bits * i)
 
     # Move packed dimension back to where it was originally
     return packed.movedim(-1, dim).contiguous()
@@ -40,7 +37,7 @@ def to_gptq(codes, scales, bits):
     zero = 1 << (bits - 1) # 8 for INT4, 128 for INT8
 
     # Pack weights
-    qweight = pack(codes.t().int() + zero, bits, dim=0) # [K * bits / 32, N]
+    qweight = pack(codes.t(), bits, dim=0, offset=zero)   # [K * bits / 32, N]
 
     # Transpose scales to match weights
     gptq_scales = scales.t().contiguous() # [G, N]
@@ -60,6 +57,18 @@ def quantize_rows(weights, group_size, max_code, rows=8192):
 
     return torch.cat([c for c, _ in parts]), torch.cat([s for _, s in parts])
 
+def marlin_permute_scales(s, size_k, size_n, group_size):
+    """Reorders scales into Marlin's layout. Copied from vLLM's marlin_utils.py (Apache-2.0)"""
+    scale_perm = [i + 8 * j for i in range(8) for j in range(8)]
+    scale_perm_single = [2 * i + j for i in range(4) for j in (0, 1, 8, 9, 16, 17, 24, 25)]
+    
+    if group_size < size_k and group_size != -1:
+        s = s.reshape(-1, len(scale_perm))[:, scale_perm]
+    else:
+        s = s.reshape(-1, len(scale_perm_single))[:, scale_perm_single]
+
+    return s.reshape(-1, size_n).contiguous()
+
 def make_marlin(qweight, gptq_scales, bits, n, k, group_size):
     """Repacks GPTQ weights for Marlin and returns a function computing x @ W.T."""
     device = qweight.device
@@ -71,14 +80,18 @@ def make_marlin(qweight, gptq_scales, bits, n, k, group_size):
     marlin_s = marlin_permute_scales(gptq_scales, k, n, group_size)
 
     # No zero point infer it based on wtype
-    zp = marlin_make_empty(device)
+    zp = torch.empty(0, dtype=torch.int, device=device)
+
+    sms = torch.cuda.get_device_properties(device).multi_processor_count
 
     # Workspace for partial reductions along k
-    workspace = marlin_make_workspace_new(device, MARLIN_MAX_BLOCKS_PER_SM)
+    workspace = torch.zeros(sms * 4, dtype=torch.int, device=device)
 
     wtype = scalar_types.uint4b8 if bits == 4 else scalar_types.uint8b128
 
-    return lambda x: apply_gptq_marlin_linear(x, marlin_q, marlin_s, zp, workspace, wtype, n, k)
+    return lambda x: ops.marlin_gemm(x, None, marlin_q, None, marlin_s, None, None, zp,
+                                     workspace, wtype, x.shape[0], n, k,
+                                     use_atomic_add=False, use_fp32_reduce=True)
 
 def make_exllama(qweight, qzeros, gptq_scales, bits):
     """Shuffles GPTQ weights for Exllama and returns a function computing x @ W.T."""
@@ -94,6 +107,16 @@ def vm_peak_gib():
     kb = int(re.search(r"VmPeak:\s+(\d+)", open("/proc/self/status").read()).group(1))
 
     return kb / 2**20
+
+def graph_time_us(run, x, calls=20):
+    """Times run(x) inside a CUDA graph so Python launch overhead is excluded"""
+    graph = torch.cuda.CUDAGraph()
+
+    with torch.cuda.graph(graph):
+        for c in range(calls):
+            run(x)
+
+    return mean_time_us(graph.replay) / calls
 
 def run_shape(label, n, k):
     """Checks Marlin and Exllama on one shape and prints one row of mean latencies."""
@@ -126,7 +149,7 @@ def run_shape(label, n, k):
             assert err < 5e-2, f"{label} W{bits}A16 {name}: max error {err:.2e}"
 
             # Benchmark
-            timings.append(mean_time_us(lambda: run(x)))
+            timings.append(graph_time_us(run, x))
 
         del backends
     del weights
@@ -149,5 +172,5 @@ if __name__ == "__main__":
     with torch.inference_mode(), torch.cuda.stream(torch.cuda.Stream()):
         for label, n, k in LLAMA_SHAPES:
             run_shape(label, n, k)
-            
+
     print(f"Peak address space {vm_peak_gib():.2f} GiB of 16")
